@@ -13,8 +13,8 @@ data:
   use_embeddings: true
   ignore_embeddings: true  # set true ONLY for unconditional pretrain (SMILES-only)
   build_3d: false
-  num_workers: 4
-  pin_memory: true
+  num_workers: 0
+  pin_memory: false
 
 training:
   epochs: 50

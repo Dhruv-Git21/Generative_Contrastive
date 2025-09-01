@@ -5,8 +5,31 @@ import numpy as np
 import pandas as pd
 import torch
 from rdkit import Chem
+from functools import partial
+import numpy as np
+import torch
+
 
 from common import chem as chem_utils
+
+SMILES_CANDIDATES = ["smiles", "SMILES", "canonical_smiles", "can_smiles", "smile", "Smiles"]
+
+def _get_smiles_list(df: pd.DataFrame, preferred: Optional[str] = None):
+    """
+    Try to find a SMILES column. Returns (list_of_smiles, column_name or None).
+    Filters obvious NaN-like strings.
+    """
+    order = []
+    if preferred:
+        order.append(preferred)
+    order.extend([c for c in SMILES_CANDIDATES if c not in order])
+    for c in order:
+        if c in df.columns:
+            series = df[c].astype(str)
+            series = series[series.str.lower() != "nan"]  # drop literal 'nan'
+            return series.tolist(), c
+    return [], None
+
 
 
 def _parse_embedding_list_cell(cell) -> Optional[np.ndarray]:
@@ -89,6 +112,57 @@ def _detect_embeddings(
     # Nothing present → fall back to zeros (unconditional-like pretrain)
     return np.zeros((N, embed_dim), dtype=np.float32)
 
+def collate_embeddings_batch(batch, feat_dim, dummy_idx, max_nodes_dataset):
+    embed_batch, adj_batch, node_feat_batch, coord_batch = [], [], [], []
+    label_batch, yield_batch, num_nodes_batch = [], [], []
+
+    for (emb, adj, node_feats, n_atoms, label, yld, coords) in batch:
+        emb = np.asarray(emb, dtype=np.float32)
+        embed_batch.append(torch.from_numpy(emb))
+
+        N = max_nodes_dataset
+
+        # adjacency
+        A = np.zeros((N, N), dtype=np.float32)
+        if n_atoms > 0 and len(adj) >= n_atoms:
+            a_np = np.asarray(adj, dtype=np.float32)
+            A[:n_atoms, :n_atoms] = a_np[:n_atoms, :n_atoms]
+        adj_batch.append(torch.from_numpy(A))
+
+        # node features (pad + dummy)
+        F = np.zeros((N, feat_dim), dtype=np.float32)
+        for i in range(min(n_atoms, len(node_feats))):
+            f = np.asarray(node_feats[i], dtype=np.float32)
+            if f.shape[0] <= feat_dim:
+                F[i, :f.shape[0]] = f
+            else:
+                F[i, :] = f[:feat_dim]
+        if 0 <= dummy_idx < feat_dim:
+            F[n_atoms:, dummy_idx] = 1.0
+        node_feat_batch.append(torch.from_numpy(F))
+
+        # coords
+        C = np.zeros((N, 3), dtype=np.float32)
+        if coords is not None and len(coords) > 0:
+            c_np = np.asarray(coords, dtype=np.float32)
+            m = min(N, c_np.shape[0])
+            C[:m, :3] = c_np[:m, :3]
+        coord_batch.append(torch.from_numpy(C))
+
+        label_batch.append(label)
+        yield_batch.append(yld)
+        num_nodes_batch.append(n_atoms)
+
+    return {
+        "embeddings": torch.stack(embed_batch, 0),
+        "adj": torch.stack(adj_batch, 0),
+        "node_feats": torch.stack(node_feat_batch, 0),
+        "coords": torch.stack(coord_batch, 0),
+        "labels": label_batch,
+        "yields": yield_batch,
+        "num_nodes": num_nodes_batch,
+    }
+
 
 class EmbeddingDataset:
     """
@@ -134,7 +208,13 @@ class EmbeddingDataset:
         self.embed_dim = int(self.embeddings.shape[1])
 
         # ---- Other columns are OPTIONAL ----
-        self.smiles_list = self.data["smiles"].astype(str).tolist() if "smiles" in self.data.columns else []
+        self.smiles_list, self.smiles_col = _get_smiles_list(self.data, preferred=None)
+        if len(self.smiles_list) == 0:
+            raise ValueError(
+                "No SMILES column found in CSV. Expected one of: "
+                f"{SMILES_CANDIDATES}. Training GraphVAE/GraphAF requires SMILES."
+            )
+
         # not required for pretrain
         self.yields = self.data["Yield"].tolist() if "Yield" in self.data.columns else [None] * len(self.smiles_list)
         self.labels = self.data["label"].astype(str).tolist() if "label" in self.data.columns else ["unknown"] * len(self.smiles_list)
@@ -198,72 +278,81 @@ class EmbeddingDataset:
         return emb, adj, node_feats, n_atoms, label, yld, coords
 
     def collate_fn(self):
-        """
-        Collate a batch into padded tensors.
-        Returns dict with keys:
-          embeddings [B, D], adj [B, N, N], node_feats [B, N, T], coords [B, N, 3],
-          labels (list[str]), yields (list[float|None]), num_nodes (list[int])
-        """
-        feat_dim = self.num_types
-        dummy_idx = self.dummy_idx
-        max_nodes_dataset = self.max_nodes
+        # Return a picklable callable (no nested functions)
+        return partial(
+            collate_embeddings_batch,
+            feat_dim=self.num_types,
+            dummy_idx=self.dummy_idx,
+            max_nodes_dataset=self.max_nodes,
+        )
 
-        def collate(batch):
-            B = len(batch)
-            embed_batch = []
-            adj_batch = []
-            node_feat_batch = []
-            coord_batch = []
-            label_batch = []
-            yield_batch = []
-            num_nodes_batch = []
+    # def collate_fn(self):
+    #     """
+    #     Collate a batch into padded tensors.
+    #     Returns dict with keys:
+    #       embeddings [B, D], adj [B, N, N], node_feats [B, N, T], coords [B, N, 3],
+    #       labels (list[str]), yields (list[float|None]), num_nodes (list[int])
+    #     """
+    #     feat_dim = self.num_types
+    #     dummy_idx = self.dummy_idx
+    #     max_nodes_dataset = self.max_nodes
 
-            for (emb, adj, node_feats, n_atoms, label, yld, coords) in batch:
-                # embeddings
-                emb = np.asarray(emb, dtype=np.float32)
-                embed_batch.append(torch.from_numpy(emb))
+    #     def collate(batch):
+    #         B = len(batch)
+    #         embed_batch = []
+    #         adj_batch = []
+    #         node_feat_batch = []
+    #         coord_batch = []
+    #         label_batch = []
+    #         yield_batch = []
+    #         num_nodes_batch = []
 
-                # pad adjacency
-                N = max_nodes_dataset
-                A = np.zeros((N, N), dtype=np.float32)
-                if n_atoms > 0 and len(adj) >= n_atoms:
-                    a_np = np.asarray(adj, dtype=np.float32)
-                    A[:n_atoms, :n_atoms] = a_np[:n_atoms, :n_atoms]
-                adj_batch.append(torch.from_numpy(A))
+    #         for (emb, adj, node_feats, n_atoms, label, yld, coords) in batch:
+    #             # embeddings
+    #             emb = np.asarray(emb, dtype=np.float32)
+    #             embed_batch.append(torch.from_numpy(emb))
 
-                # pad node features to feat_dim
-                F = np.zeros((N, feat_dim), dtype=np.float32)
-                for i in range(min(n_atoms, len(node_feats))):
-                    f = np.asarray(node_feats[i], dtype=np.float32)
-                    if f.shape[0] <= feat_dim:
-                        F[i, :f.shape[0]] = f
-                    else:
-                        F[i, :] = f[:feat_dim]
-                # dummy for remaining atoms
-                if 0 <= dummy_idx < feat_dim:
-                    for i in range(n_atoms, N):
-                        F[i, dummy_idx] = 1.0
-                node_feat_batch.append(torch.from_numpy(F))
+    #             # pad adjacency
+    #             N = max_nodes_dataset
+    #             A = np.zeros((N, N), dtype=np.float32)
+    #             if n_atoms > 0 and len(adj) >= n_atoms:
+    #                 a_np = np.asarray(adj, dtype=np.float32)
+    #                 A[:n_atoms, :n_atoms] = a_np[:n_atoms, :n_atoms]
+    #             adj_batch.append(torch.from_numpy(A))
 
-                # pad coords
-                C = np.zeros((N, 3), dtype=np.float32)
-                if coords is not None and len(coords) > 0:
-                    c_np = np.asarray(coords, dtype=np.float32)
-                    C[: min(N, c_np.shape[0]), :3] = c_np[: min(N, c_np.shape[0]), :3]
-                coord_batch.append(torch.from_numpy(C))
+    #             # pad node features to feat_dim
+    #             F = np.zeros((N, feat_dim), dtype=np.float32)
+    #             for i in range(min(n_atoms, len(node_feats))):
+    #                 f = np.asarray(node_feats[i], dtype=np.float32)
+    #                 if f.shape[0] <= feat_dim:
+    #                     F[i, :f.shape[0]] = f
+    #                 else:
+    #                     F[i, :] = f[:feat_dim]
+    #             # dummy for remaining atoms
+    #             if 0 <= dummy_idx < feat_dim:
+    #                 for i in range(n_atoms, N):
+    #                     F[i, dummy_idx] = 1.0
+    #             node_feat_batch.append(torch.from_numpy(F))
 
-                label_batch.append(label)
-                yield_batch.append(yld)
-                num_nodes_batch.append(n_atoms)
+    #             # pad coords
+    #             C = np.zeros((N, 3), dtype=np.float32)
+    #             if coords is not None and len(coords) > 0:
+    #                 c_np = np.asarray(coords, dtype=np.float32)
+    #                 C[: min(N, c_np.shape[0]), :3] = c_np[: min(N, c_np.shape[0]), :3]
+    #             coord_batch.append(torch.from_numpy(C))
 
-            return {
-                "embeddings": torch.stack(embed_batch, dim=0),
-                "adj": torch.stack(adj_batch, dim=0),
-                "node_feats": torch.stack(node_feat_batch, dim=0),
-                "coords": torch.stack(coord_batch, dim=0),
-                "labels": label_batch,
-                "yields": yield_batch,
-                "num_nodes": num_nodes_batch,
-            }
+    #             label_batch.append(label)
+    #             yield_batch.append(yld)
+    #             num_nodes_batch.append(n_atoms)
 
-        return collate
+    #         return {
+    #             "embeddings": torch.stack(embed_batch, dim=0),
+    #             "adj": torch.stack(adj_batch, dim=0),
+    #             "node_feats": torch.stack(node_feat_batch, dim=0),
+    #             "coords": torch.stack(coord_batch, dim=0),
+    #             "labels": label_batch,
+    #             "yields": yield_batch,
+    #             "num_nodes": num_nodes_batch,
+    #         }
+
+    #     return collate

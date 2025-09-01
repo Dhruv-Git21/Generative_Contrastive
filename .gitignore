@@ -25,7 +25,7 @@ Thumbs.db
 *.out
 
 # Data / models (avoid committing large binaries)
-data/
+# data/
 datasets/
 checkpoints/
 outputs/

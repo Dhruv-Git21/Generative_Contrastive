@@ -1,0 +1,46 @@
+model: graphaf
+
+paths:
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  output_dir: outs
+
+data:
+  train_csv: ""             
+  val_csv: ""               
+  cond_csv: ""              
+  label: "high"
+  use_embeddings: true
+  ignore_embeddings: true
+  build_3d: false
+  num_workers: 4
+  pin_memory: true
+
+training:
+  epochs: 60
+  batch_size: 64
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: 1.0
+  scheduler: cosine
+  step_size: 20
+  gamma: 0.5
+  seed: 42
+  deterministic: false
+  device: "cuda"
+
+model_cfg:
+  embed_dim: 128
+  latent_dim: 64
+  hidden_dim: 128
+  max_nodes: 32
+  node_feat_size: 6         # [C,N,O,F,S,Stop]
+  edge_feat_size: 4         # [SINGLE,DOUBLE,TRIPLE,AROMATIC]
+
+# optional (used by graphaf trainer if implemented)
+teacher_forcing:
+  start: 1.0
+  end: 0.5
+
+generation:
+  num_samples: 200

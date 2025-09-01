@@ -1,0 +1,42 @@
+model: base
+
+paths:
+  checkpoint_dir: checkpoints
+  log_dir: logs
+  output_dir: outs
+  output: outs/generated.csv        # (set at runtime or here)
+  checkpoint: checkpoints/model.pt  # (set at runtime or here)
+
+data:
+  train_csv: ""          # path when training/finetuning
+  val_csv: ""            # optional
+  cond_csv: ""           # path when generating/evaluating
+  label: "high"          # used in generation to filter conditioning rows
+  use_embeddings: true   # use your emb_* during train/gen
+  ignore_embeddings: false  # set true ONLY for unconditional pretrain
+  build_3d: false        # true for 3D models if you don’t have coords
+  num_workers: 4
+  pin_memory: true
+
+training:
+  epochs: 50
+  batch_size: 64
+  lr: 1.0e-3
+  weight_decay: 0.0
+  grad_clip: 1.0
+  scheduler: cosine       # [none, step, cosine]
+  step_size: 20
+  gamma: 0.5
+  seed: 42
+  deterministic: false
+  device: "cuda"
+
+model_cfg:
+  embed_dim: 128          # <-- matches your CSV (emb_0..emb_127)
+  latent_dim: 64
+  hidden_dim: 128
+  max_nodes: 32
+  num_atom_types: 5       # for 3D/EqFM; keep consistent across configs
+
+generation:
+  num_samples: 100

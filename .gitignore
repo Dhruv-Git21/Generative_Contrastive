@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs & temp
+*.log
+*.tmp
+*.out
+
+# Data / models (avoid committing large binaries)
+data/
+datasets/
+checkpoints/
+outputs/
+runs/
+*.pt
+*.pth
+*.ckpt
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key

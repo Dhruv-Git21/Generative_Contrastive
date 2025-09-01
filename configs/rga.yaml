@@ -1,0 +1,30 @@
+model: rga
+
+paths:
+  output_dir: outs
+  log_dir: logs
+
+data:
+  cond_csv: ""               # used to compute target centroid (e.g., your high class csv)
+  label: "high"
+  seed_smiles_csv: ""        # optional seed population
+
+rga:
+  population_size: 128
+  generations: 60
+  elite_frac: 0.1
+  crossover_rate: 0.7
+  mutation_rate: 0.3
+  score_metric: "cosine"     # [cosine, euclidean]
+  penalty:
+    max_mw: 600.0
+    max_sa: 6.5
+    logp_range: [-1.0, 5.0]
+  docking:
+    enable: false
+    receptor: ""
+    center: [0.0, 0.0, 0.0]
+    size: [20.0, 20.0, 20.0]
+
+generation:
+  num_samples: 200

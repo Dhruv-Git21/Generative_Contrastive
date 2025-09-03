@@ -3,6 +3,11 @@ import torch.nn as nn
 from rdkit import Chem
 from common import chem as chem_utils
 from models.components.gnn_blocks import SimpleGraphEncoder
+from rdkit import Chem
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 class GraphAFGenerator(nn.Module):
     def __init__(self, node_feat_size, edge_feat_size, latent_dim, embed_dim, max_nodes=50):
@@ -93,70 +98,119 @@ class GraphAFGenerator(nn.Module):
         The batch is a dict with 'adj', 'node_feats', 'num_nodes', 'embeddings'.
         Uses teacher forcing to train the autoregressive model.
         """
-        batch_loss = 0.0
+        device = next(self.parameters()).device
+        batch_loss = torch.tensor(0.0, device=device)
+
         B = len(batch['num_nodes'])
         for idx in range(B):
-            n_nodes = batch['num_nodes'][idx]
+            n_nodes = int(batch['num_nodes'][idx])
+
             # Get actual adjacency and node features for this molecule from batch
-            adj = batch['adj'][idx]  # shape (max_nodes, max_nodes)
-            node_feat_matrix = batch['node_feats'][idx]  # (max_nodes, node_feat_size)
-            embed_vec = batch['embeddings'][idx].unsqueeze(0)  # (1, embed_dim)
-            # We will iterate from 0 to n_nodes (inclusive, where n_nodes step corresponds to stop)
-            node_loss = 0.0
-            edge_loss = 0.0
+            adj = batch['adj'][idx]                             # shape (max_nodes, max_nodes)
+            node_feat_matrix = batch['node_feats'][idx]         # (max_nodes, node_feat_size)
+            embed_vec = batch['embeddings'][idx].unsqueeze(0).to(device)  # (1, embed_dim)
+
+            node_loss = torch.tensor(0.0, device=device)
+            edge_loss = torch.tensor(0.0, device=device)
+
             # Initialize a partial graph representation (no nodes to start)
             nodes_added = []
             mol = Chem.RWMol()
+
             for t in range(n_nodes + 1):  # include stop step
-                graph_repr = torch.zeros(self.embed_dim)
+                # --- Graph representation of current partial graph ---
+                graph_repr = torch.zeros(self.embed_dim, device=device)
                 if nodes_added:
-                    # Compute current graph representation from existing partial graph
                     cur_n = len(nodes_added)
-                    cur_node_feats = torch.zeros(cur_n, self.node_feat_size)
+                    # one-hot node features for partial graph
+                    cur_node_feats = torch.zeros(cur_n, self.node_feat_size, device=device)
                     for i, type_idx in enumerate(nodes_added):
-                        cur_node_feats[i, type_idx] = 1.0
-                    cur_adj = torch.tensor([[0]*cur_n for _ in range(cur_n)], dtype=torch.float)
+                        cur_node_feats[i, int(type_idx)] = 1.0
+
+                    # adjacency from current RDKit mol
+                    cur_adj = torch.zeros(cur_n, cur_n, dtype=torch.float32, device=device)
                     for i in range(cur_n):
                         for j in range(cur_n):
                             if mol.GetMol().GetBondBetweenAtoms(int(i), int(j)):
-                                cur_adj[i,j] = 1
-                    graph_repr = self.graph_encoder(cur_node_feats, cur_adj)
-                # Prepare context vector
-                z = torch.zeros(1, self.latent_dim)  # we use zero latent in training for simplicity
-                context = torch.cat([z, embed_vec + graph_repr.view(1,-1)], dim=1)
-                node_logits = self.node_flow_net(context).view(-1)
-                # Determine target for this step
+                                cur_adj[i, j] = 1.0
+
+                    graph_repr = self.graph_encoder(cur_node_feats, cur_adj)  # -> (embed_dim,)
+                    # ensure it's a flat vector
+                    graph_repr = graph_repr.view(-1)
+
+                # --- Context vector ---
+                z = torch.zeros(1, self.latent_dim, device=device)  # zero latent during training
+                # embed_vec: (1, embed_dim), graph_repr: (embed_dim,) -> (1, embed_dim)
+                context = torch.cat([z, embed_vec + graph_repr.view(1, -1)], dim=1)
+
+                # --- Node type prediction ---
+                node_logits = self.node_flow_net(context).view(-1)  # [C_node]
                 if t < n_nodes:
-                    # Target is actual node type t
-                    target_type_idx = int(torch.argmax(node_feat_matrix[t])) if node_feat_matrix.shape[0] > t else self.node_feat_size - 1
+                    # target is actual node type at position t (fall back to STOP if out of range)
+                    if node_feat_matrix.shape[0] > t:
+                        target_type_idx = int(torch.argmax(node_feat_matrix[t]).item())
+                    else:
+                        target_type_idx = self.node_feat_size - 1  # STOP
                 else:
-                    # After all actual nodes, target is stop (dummy type)
-                    target_type_idx = self.node_feat_size - 1
-                # Node type loss (cross entropy)
-                node_target = torch.tensor([target_type_idx], dtype=torch.long)
-                node_loss += nn.functional.cross_entropy(node_logits.unsqueeze(0), node_target)
+                    target_type_idx = self.node_feat_size - 1  # STOP at final step
+
+                node_target = torch.as_tensor([target_type_idx], dtype=torch.long, device=device)
+                node_loss = node_loss + F.cross_entropy(node_logits.unsqueeze(0), node_target)
+
+                # If STOP, end generation for this molecule
                 if target_type_idx == self.node_feat_size - 1:
-                    # If target was stop, we end generation in training as well
                     break
-                # Otherwise, add this node as in actual molecule
+
+                # Otherwise, add this node to partial graph (default element placeholder)
                 nodes_added.append(target_type_idx)
-                mol.AddAtom(Chem.Atom("C"))  # add an atom (using a default element for training)
-                # Now predict edges from this new node to existing ones
-                for j in range(len(nodes_added)-1):
-                    edge_logit = self.edge_flow_net(context).view(-1)
-                    # Target edge presence based on actual adjacency
-                    target_edge = 0.0
-                    if adj[t][j] == 1:  # if actual molecule has bond between node t and j
-                        target_edge = 1.0
-                        # Add bond to partial mol to reflect actual structure for next steps
-                        try:
-                            mol.AddBond(int(len(nodes_added)-1), int(j), Chem.BondType.SINGLE)
-                        except:
-                            pass
-                    # Edge loss (binary cross-entropy)
-                    edge_loss += nn.functional.binary_cross_entropy_with_logits(edge_logit, torch.tensor([target_edge]))
+                try:
+                    mol.AddAtom(Chem.Atom("C"))
+                except Exception:
+                    pass
+
+                # --- Edge predictions from new node to existing ones ---
+                # new node index = len(nodes_added)-1
+                for j in range(len(nodes_added) - 1):
+                    edge_logit = self.edge_flow_net(context).view(-1)  # shape [C_edge] or [1]
+                    C_edge = edge_logit.numel()
+
+                    # Target edge presence from ground-truth adjacency
+                    # (t is the current "true" node index; j indexes previous added nodes)
+                    # adj may be numpy/torch/list; current code used adj[t][j]
+                    try:
+                        gt = int(adj[t][j])
+                    except Exception:
+                        gt = int(adj[t, j].item() if torch.is_tensor(adj) else int(adj[t, j]))
+                    has_edge = 1 if gt == 1 else 0
+
+                    # ---- Loss selection to avoid size mismatch ----
+                    if C_edge == 1:
+                        # Binary logit → use BCEWithLogits with scalar target
+                        target_edge = torch.as_tensor([float(has_edge)], device=edge_logit.device, dtype=edge_logit.dtype)
+                        edge_loss = edge_loss + F.binary_cross_entropy_with_logits(edge_logit, target_edge)
+
+                    elif C_edge == 2:
+                        # Two-class (no-edge vs edge) → use CrossEntropy with class index {0,1}
+                        target_class = torch.as_tensor([has_edge], dtype=torch.long, device=edge_logit.device)
+                        edge_loss = edge_loss + F.cross_entropy(edge_logit.unsqueeze(0), target_class)
+
+                    else:
+                        # Multi-class (e.g., [no bond, single, double, triple])
+                        # With binary adjacency, map: 0 -> NO_BOND (class 0), 1 -> SINGLE (class 1)
+                        target_class_idx = 1 if has_edge == 1 else 0
+                        target_class = torch.as_tensor([target_class_idx], dtype=torch.long, device=edge_logit.device)
+                        edge_loss = edge_loss + F.cross_entropy(edge_logit.unsqueeze(0), target_class)
+
+                        # Optionally add the bond to the mol only when we predict/know presence
+                        if has_edge == 1:
+                            try:
+                                mol.AddBond(int(len(nodes_added) - 1), int(j), Chem.BondType.SINGLE)
+                            except Exception:
+                                pass
+
             # Sum losses for this molecule
-            batch_loss += (node_loss + edge_loss)
+            batch_loss = batch_loss + (node_loss + edge_loss)
+
         # Average loss over batch
-        batch_loss = batch_loss / B
+        batch_loss = batch_loss / max(1, B)
         return batch_loss

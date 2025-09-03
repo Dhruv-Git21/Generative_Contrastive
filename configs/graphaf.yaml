@@ -1,20 +1,20 @@
 model: graphaf
 
 paths:
-  checkpoint_dir: checkpoints
-  log_dir: logs
-  output_dir: outs
+  checkpoint_dir: checkpoints_graphaf
+  log_dir: logs_graphaf
+  output_dir: outs_graphaf
 
 data:
   train_csv: ""             
   val_csv: ""               
   cond_csv: ""              
   label: "high"
-  use_embeddings: true
+  use_embeddings: false
   ignore_embeddings: true
   build_3d: false
-  num_workers: 4
-  pin_memory: true
+  num_workers: 0
+  pin_memory: false
 
 training:
   epochs: 60
@@ -27,7 +27,7 @@ training:
   gamma: 0.5
   seed: 42
   deterministic: false
-  device: "cuda"
+  device: "cpu"
 
 model_cfg:
   embed_dim: 128

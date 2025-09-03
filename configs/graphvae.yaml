@@ -33,7 +33,7 @@ model_cfg:
   embed_dim: 128
   latent_dim: 64
   hidden_dim: 128
-  max_nodes: 32
+  max_nodes: 64
   node_feat_dim: 6          # e.g. [C,N,O,F,S,Stop]
 
 # optional (used by graphvae trainer if implemented)

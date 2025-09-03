@@ -64,18 +64,22 @@ class GraphVAE(nn.Module):
         recon_loss_total = 0.0
         kld_loss_total = 0.0
         for i in range(B):
-            # Prepare actual graph (only consider first num_nodes[i] nodes)
             n = batch['num_nodes'][i]
             embed = embeddings[i]
-            # Extract submatrix for actual atoms
-            adj = adjs[i][:n, :n]
-            node_feat = node_feats[i][:n, :]
+            # Robustly slice adjacency matrix
+            adj_full = adjs[i]
+            # Always slice to [max_nodes, max_nodes] first
+            adj_full = adj_full[:self.max_nodes, :self.max_nodes]
+            # Then slice to [n, n]
+            adj = adj_full[:n, :n]
+            # Assert shape for debugging
+            assert adj.shape == (n, n), f"adj shape mismatch: got {adj.shape}, expected ({n}, {n})"
+            node_feat_full = node_feats[i][:self.max_nodes, :]
+            node_feat = node_feat_full[:n, :]
             mu, logvar = self.encode(node_feat, adj, embed)
             z = reparameterize(mu, logvar)
             adj_logits, node_logits = self.decode(z.unsqueeze(0), embed.unsqueeze(0))
             # Get predicted and target for loss
-            # We consider all entries (including those for padded nodes) in recon loss.
-            # Adjacency reconstruction: use BCE on each edge (treating each entry as independent).
             adj_pred = adj_logits.view(self.max_nodes, self.max_nodes)
             node_pred = node_logits.view(self.max_nodes, self.node_feat_dim)
             # Build target matrices (with padding for dummy nodes)
@@ -84,9 +88,7 @@ class GraphVAE(nn.Module):
             # Fill actual adjacency
             target_adj[:n, :n] = adj
             # Fill actual node one-hot
-            target_node[:n, :] = node_feats[i][:n, :]
-            # Dummy nodes in target_node remain all zeros except perhaps dummy index? 
-            # (We have dummy as one-hot in padded input already)
+            target_node[:n, :] = node_feat
             # Compute reconstruction loss
             # For adjacency, use binary cross entropy on each entry
             recon_adj_loss = nn.functional.binary_cross_entropy_with_logits(adj_pred, target_adj)
@@ -100,7 +102,9 @@ class GraphVAE(nn.Module):
                 # Skip if target is all zeros (which means dummy), we will consider that as dummy index
                 tgt_idx = int(target_indices[j].item())
                 logits = node_pred[j].unsqueeze(0)
-                recon_node_loss += nn.functional.cross_entropy(logits, torch.tensor([tgt_idx]))
+                recon_node_loss += nn.functional.cross_entropy(
+                    logits, torch.tensor([tgt_idx], device=logits.device)
+                )
             recon_node_loss = recon_node_loss / self.max_nodes
             recon_loss = recon_adj_loss + recon_node_loss
             # KLD loss

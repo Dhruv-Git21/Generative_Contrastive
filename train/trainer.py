@@ -2,7 +2,7 @@ import logging
 import torch
 from train import sched_optim
 
-def train_model(model, train_loader, config, val_loader=None, device=torch.device('cpu')):
+def train_model(model, train_loader, config, val_loader=None, device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')):
     """Unified training loop for the model."""
     model.to(device)
     model.train()

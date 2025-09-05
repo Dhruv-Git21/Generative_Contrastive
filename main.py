@@ -286,6 +286,12 @@ def main():
         logging.info("Starting training...")
         ckpt_dir = cfg_get(cfg, "paths.checkpoint_dir", "checkpoints")
         os.makedirs(ckpt_dir, exist_ok=True)
+        # Set checkpoint file path in config for trainer
+        ckpt_file = os.path.join(ckpt_dir, f"{model_name}_last.pth")
+        cfg_set(cfg, "checkpoint", ckpt_file)  # Highlight: set for trainer
+
+        # Train
+        logging.info("Starting training...")
         train_module.train_model(model, train_loader, cfg, val_loader, device)
         logging.info("Training finished.")
 

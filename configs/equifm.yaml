@@ -1,9 +1,9 @@
 model: equifm
 
 paths:
-  checkpoint_dir: checkpoints
-  log_dir: logs
-  output_dir: outs
+  checkpoint_dir: checkpoints_equifm
+  log_dir: logs_equifm
+  output_dir: outs_equifm
 
 data:
   train_csv: ""             

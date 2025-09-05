@@ -274,9 +274,10 @@ def main():
                 num_atom_types=dims["num_atom_types"],
             ).to(device)
         elif model_name == "equifm":
+            # Use the actual number of atom types from the dataset to avoid feature mismatch
             model = ModelClass(
                 embed_dim=dims["embed_dim"],
-                num_atom_types=dims["num_atom_types"],
+                num_atom_types=ds_train.num_types,  # Highlight: use dataset's num_types
             ).to(device)
         else:
             logging.error(f"Unknown model type {model_name}")

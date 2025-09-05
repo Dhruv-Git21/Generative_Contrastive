@@ -27,7 +27,7 @@ training:
   gamma: 0.5
   seed: 42
   deterministic: false
-  device: "cuda"
+  device: "cpu"
 
 model_cfg:
   embed_dim: 128

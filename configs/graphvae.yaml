@@ -1,9 +1,9 @@
 model: graphvae
 
 paths:
-  checkpoint_dir: checkpoints
-  log_dir: logs
-  output_dir: outs
+  checkpoint_dir: checkpoints_graphvae
+  log_dir: logs_graphvae
+  output_dir: outs_graphvae
 
 data:
   train_csv: ""             # fill for training/finetune
